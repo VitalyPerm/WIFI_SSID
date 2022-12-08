@@ -15,9 +15,10 @@ import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.RequiresApi
 import androidx.appcompat.app.AppCompatActivity
-import androidx.lifecycle.MutableLiveData
 import kotlinx.coroutines.*
-import kotlin.coroutines.resume
+import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.first
 
 const val TAG = "check___"
 
@@ -37,45 +38,24 @@ class MainActivity : AppCompatActivity() {
         Manifest.permission.ACCESS_FINE_LOCATION
     )
 
-    val ssid31 = MutableLiveData<String>()
-
-    val connManager by lazy { getSystemService(ConnectivityManager::class.java) as ConnectivityManager }
-
-    val request = NetworkRequest.Builder()
-        .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
-        .build()
-
-    val networkCallback =
-        object : ConnectivityManager.NetworkCallback(FLAG_INCLUDE_LOCATION_INFO) {
-            override fun onCapabilitiesChanged(
-                network: Network,
-                networkCapabilities: NetworkCapabilities
-            ) {
-                super.onCapabilitiesChanged(network, networkCapabilities)
-                Log.d(TAG, "onCapabilitiesChanged: on air!")
-                val wifiInfo = networkCapabilities.transportInfo as WifiInfo
-                val ssid = wifiInfo.ssid
-                showToast(ssid)
-            }
-        }
-
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
         permissionRequester.launch(permissionsArray)
-
     }
 
-    private fun getSSID() {
+    fun getSSID() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            connManager.registerNetworkCallback(request, networkCallback)
-            ssid31.observe(this) { ssid ->
-                showToast(ssid)
-                connManager.unregisterNetworkCallback(networkCallback)
+            GlobalScope.launch {
+                val ssid = getWifiSsidApiS().first()
+                withContext(Dispatchers.Main) {
+                    showToast(ssid)
+                }
             }
         } else {
-            showToast(getSsidOld())
+            val ssid = getSsidOld()
+            showToast(ssid)
         }
     }
 
@@ -91,7 +71,12 @@ class MainActivity : AppCompatActivity() {
 
 
     @RequiresApi(Build.VERSION_CODES.S)
-    private suspend fun getWifiSsidApiS() = suspendCancellableCoroutine<String> { continuation ->
+    fun getWifiSsidApiS() = callbackFlow<String> {
+        var cm: ConnectivityManager? =
+            getSystemService(ConnectivityManager::class.java) as ConnectivityManager
+        val networkRequest = NetworkRequest.Builder()
+            .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+            .build()
         val networkCallback =
             object : ConnectivityManager.NetworkCallback(FLAG_INCLUDE_LOCATION_INFO) {
                 override fun onCapabilitiesChanged(
@@ -99,19 +84,18 @@ class MainActivity : AppCompatActivity() {
                     networkCapabilities: NetworkCapabilities
                 ) {
                     super.onCapabilitiesChanged(network, networkCapabilities)
-                    Log.d(TAG, "onCapabilitiesChanged: isActive ${continuation.isActive}")
+                    Log.d(TAG, "onCapabilitiesChanged: on air!")
                     val wifiInfo = networkCapabilities.transportInfo as WifiInfo
-                    if (continuation.isActive) {
-                        continuation.resume(wifiInfo.ssid)
-                        continuation.cancel()
-                    }
+                    val ssid = wifiInfo.ssid
+                    trySend(ssid)
                 }
             }
-        connManager.registerNetworkCallback(request, networkCallback)
 
-        continuation.invokeOnCancellation {
-            Log.d(TAG, "getWifiSsidApiS: cancel")
-            connManager.unregisterNetworkCallback(networkCallback)
+        cm?.registerNetworkCallback(networkRequest, networkCallback)
+        awaitClose {
+            Log.d(TAG, "getWifiSsidApiS: awaitclose called")
+            cm?.unregisterNetworkCallback(networkCallback)
+            cm = null
         }
     }
 }
